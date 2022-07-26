@@ -5,23 +5,25 @@
 
 // decl.
 #define max_connections 10
+#define max_threads 10
 
-const unsigned int max_threads = 10;
+// const unsigned int max_threads = 10;
 unsigned int keep_running = 1;
 
-// TODO: don't have this as a global var.
+// TODO: don't have these as a global var.
 volatile int connections[max_connections];
+thread_t thread_arr[max_threads];
 
 void detect_exit(int signal);
-int create_server_socket(Address *addy);
-void* send_message(void* data);
+int create_server_socket(address_t *addy);
+void send_message(const char* msg, int fd, int all);
 void* receive_message(void* data);
 void* accept_connection(void* data);
 
 struct connection_args
 {
     int sfd;
-    Address addy;
+    address_t addy;
 } *c_args;
 
 // defn.
@@ -31,7 +33,7 @@ int main()
 {
     // vars.
     int sfd;
-    Address addy = create_addy(host, port, AF_INET);  // temp.
+    address_t addy = create_addy(host, port, AF_INET);  // temp.
 
     // insns.
     // create exit handler
@@ -47,26 +49,13 @@ int main()
 
     printf("Hosted on %s:%d\n", addy.host, addy.addy_in.sin_port);
 
-    Thread thread_arr[max_threads];
-
     // a loop. yes, this is a w̶h̶i̶l̶e̶ for loop. :)
-    //TODO: make different tasks split up across different loops in different threads rather than one big loop
 
     c_args = malloc(sizeof(struct connection_args) * 1);
     c_args->sfd = sfd;
     c_args->addy = addy;
 
-    Thread accept_thread = create_thread(accept_connection, c_args, thread_arr, max_threads);
-
-    // for (;;) {
-    //     args = malloc(sizeof(struct recv_args) * 1);
-    //     args->fd = cfd;
-
-    //     Thread rec_thread = create_thread(receive_message, args, thread_arr, max_threads);
-
-    //     // dc the client.
-    //     close(cfd);
-    // }
+    thread_t accept_thread = create_thread(accept_connection, c_args, thread_arr, max_threads);
 
     while (keep_running) {
         fflush(stdout);
@@ -86,56 +75,93 @@ int main()
 void* accept_connection(void* data)
 {
     struct connection_args* c_args = data;
-    
-    // needed args
-    // sfd, addy, cfd array, cfd array size
 
     for (;;)
     {
         int cfd;
 
         size_t connect_size = sizeof(connections)/sizeof(connections[0]);
+        size_t connect_count = count_array(connections, connect_size);
         
         if (0 > (cfd = accept(c_args->sfd, &c_args->addy.addy,  &c_args->addy.addysize))) {
             printf("Could not accept connection %d\n", connect_size+1);
             continue;
         }
-        
-        connections[connect_size+1] = cfd;
 
-        printf("accepted new connection %d\n", connect_size+1);
+        connections[connect_count] = cfd;
+
+        r_args = malloc(sizeof(struct recv_args) * 1);
+        r_args->fd = cfd;
+
+        thread_t client_thread = create_thread(receive_message, r_args, thread_arr, max_threads);
+
+        printf("accepted new connection %d\n", connect_size);
     }
 
     return 0;
 }
 
-void* send_message(void* data)
+void on_disconnect(int cfd)
 {
-    struct recv_args* args = data;
-    const char* message = "message from the server";
+    printf("client %d has disconnected from the server\n", cfd);
+    
+    //TODO: deallocate from connections array
+}
 
-    send(args->fd, message, strlen(message), 0);
+void send_message(const char* msg, int fd, int all)
+{
+    if (all)
+    {
+        size_t connect_size = sizeof(connections)/sizeof(connections[0]);
 
-    return 0;
+        for (size_t i = 0; i < count_array(connections, connect_size); i++)
+        {
+            printf("in send message loop");
+
+            // don't send message back to original client
+            if (connections[i] == fd) continue;
+
+            send(connections[i], msg, strlen(msg), 0);
+        }
+
+        return;
+    }
+
+    send(fd, msg, strlen(msg), 0);
 }
 
 void* receive_message(void* data)
 {
     struct recv_args* args = data;
 
-    char buf[bufsize];
-    int bytesread = read(args->fd, buf, bufsize);
+    for (;;)
+    {
+        char buf[bufsize];
+        int bytesread = read(args->fd, buf, bufsize);
 
-    for (int i = 0; bytesread > i; i++) {
-        printf("%c", buf[i]);
+        // check if client has dc'd
+        if (bytesread == 0) {
+            break;
+        }
+    
+        for (int i = 0; bytesread > i; i++) {
+            printf("%c", buf[i]);
+        }
+
+        printf("\ntotal read bytes: %d\n", bytesread);
+
+        // TODO: send the message to all other clients
+        send_message(buf, args->fd, 1);
     }
 
-    printf("\ntotal read bytes: %d\n", bytesread);
+    on_disconnect(args->fd);
 
     return 0;
 }
 
-int create_server_socket(Address *addy)
+//TODO: implement delete thread method that deallocated thread from thread array
+
+int create_server_socket(address_t *addy)
 {
     // vars.
     int sfd;

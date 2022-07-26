@@ -1,3 +1,6 @@
+// Misc defns.
+#define bufsize 4096 // this runs out quick, error "broken pipe"
+
 // OS-Specific defns.
 #ifdef __linux__ 
 // OS is Linux
@@ -29,13 +32,14 @@ typedef LPDWORD thread_id_t;
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdlib.h>
 
 // OS-Specific incl.
 #if defined(LINUX) || defined(MACOS)
 
 #include <sys/socket.h>
 #include <netdb.h>
-#include <err.h>
+#include <err.h> //TODO: use
 #include <arpa/inet.h>
 #include <pthread.h>
 #include <unistd.h>
@@ -45,20 +49,18 @@ typedef pthread_t thread_id_t;
 
 #endif
 
-//#define uint16_t unsigned short // dumb fix for now because max value of short is 65535
-
-const unsigned int bufsize = 2048; // this runs out quick, error "broken pipe"
-
 typedef struct
 {
     const char* name;
     //TODO: implement more here
-} User;
+} user_t;
 
 typedef struct
 {
     const char* content;
-} Message;
+
+    // timestamp, sender
+} message_t;
 
 typedef struct
 {
@@ -66,7 +68,7 @@ typedef struct
     struct sockaddr_in addy_in;
     const char* host;
     int addysize;
-} Address;
+} address_t;
 
 typedef struct
 {
@@ -74,16 +76,68 @@ typedef struct
     void* args;
     void* native;
     thread_id_t threadId;
-} Thread;
+} thread_t;
 
 struct recv_args
 {
     int fd;
 } *r_args;
 
+//TODO: refactor
+const char* get_input(int limit, const char* prompt)
+{
+    printf(prompt);
+    fflush(stdout);
+
+    int input_buf_size = 0;
+    char* input_buf = malloc(sizeof(char) * input_buf_size);
+
+    while (0 > limit || limit > input_buf_size)
+    {
+        printf("gello");
+        const char next_char = getchar();
+
+        if (next_char == '\n') {
+            break;
+        }
+
+        input_buf_size++;
+        input_buf = realloc(input_buf, input_buf_size);
+
+        input_buf[input_buf_size-1] = next_char;
+    }
+
+    return input_buf;
+}
+
+void print_array(void* array[], size_t size)
+{
+    for (size_t i = 0; i < size; i++)
+    {
+        printf("%d", array[i]);
+    }
+    printf("\n");
+}
+
+
+// currently for ints only
+size_t count_array(void* array[], size_t size)
+{
+    size_t count;
+    for (int i = 0; i < size; i++)
+    {
+        if (!array[i]) count++;
+    }
+
+    printf("%d, ", count);
+    print_array(array, size);
+
+    return count;
+}
+
 #if defined(LINUX) || defined(MACOS)
 
-int create_socket()
+int create_socket(void)
 {
     // vars.
     int sfd;
@@ -100,11 +154,11 @@ int create_socket()
     return sfd;
 }
 
-Address create_addy(const char* host, int port, int family)
+address_t create_addy(const char* host, uint16_t port, int family)
 {
     // vars.
     struct sockaddr_in addy = {
-        .sin_port = htons(port),
+        .sin_port = port,
         .sin_family = family
     };
 
@@ -115,7 +169,7 @@ Address create_addy(const char* host, int port, int family)
     }
 
     // vars.
-    Address address = {
+    address_t address = {
         .addy = *((struct sockaddr*)&addy),  // hack for casting to sockaddr.
         .addy_in = addy,
         .host = host
@@ -126,17 +180,19 @@ Address create_addy(const char* host, int port, int family)
     return address;
 }
 
-Thread create_thread(void*(*func)(void*), void* args, Thread thread_arr[], size_t arr_size)
+thread_t create_thread(void*(*func)(void*), void* args, thread_t thread_arr[], size_t arr_size)
 {
-    Thread thread;
+    thread_t thread;
     pthread_t thread_id;
 
     int err = pthread_create(&thread_id, NULL, func, args);
 
+    size_t thread_count = count_array(thread_arr, arr_size);
+
     if (err != 0)
     {
         printf("thread creation error");
-        Thread err;
+        thread_t err;
         return err;
         
         //TODO: proper error handling
@@ -145,13 +201,13 @@ Thread create_thread(void*(*func)(void*), void* args, Thread thread_arr[], size_
     thread.threadId = thread_id;
 
     //TODO: make this safe
-    thread_arr[arr_size + 1] = thread;
-    printf("thread %d created\n", arr_size+1);
+    thread_arr[thread_count] = thread;
+    printf("thread %d created\n", thread_count);
 
     return thread;
 }
 
-void clean_threads(Thread thread_arr[], size_t arr_size)
+void clean_threads(thread_t thread_arr[], size_t arr_size)
 {
     for (int i = 0; i < arr_size; i++)
     {
@@ -162,7 +218,7 @@ void clean_threads(Thread thread_arr[], size_t arr_size)
 #elif defined(WINDOWS)
 
 // SOCKETS //
-int create_socket()
+int create_socket(void)
 {
     // check if winsock is initialized.
     WSADATA wsaData;
@@ -186,17 +242,17 @@ int create_socket()
     return sfd;
 }
 
-Address create_addy(const char* host, int port, int family)
+address_t create_addy(const char* host, uint16_t port, int family)
 {
     // vars.
     struct sockaddr_in addy = {
-        .sin_port = htons(port),
+        .sin_port = port,
         .sin_family = family,
         .sin_addr.s_addr = inet_addr(host)
     };
 
     // vars.
-    Address address = {
+    address_t address = {
         .addy = *((struct sockaddr*)&addy),  // hack for casting to sockaddr.
         .addy_in = addy,
         .host = host
@@ -210,15 +266,15 @@ Address create_addy(const char* host, int port, int family)
 // THREADING //
 DWORD WINAPI win_thread_target(LPVOID p)
 {
-    Thread* data = (Thread*)p;
+    thread_t* data = (thread_t*)p;
     data->target(data->args);
 
     return 0;
 }
 
-Thread create_thread(void*(*func)(void*), void* args, Thread thread_arr[], size_t arr_size)
+thread_t create_thread(void*(*func)(void*), void* args, thread_t thread_arr[], size_t arr_size)
 {
-    Thread thread = {
+    thread_t thread = {
         .args = args,
         .target = func
     };
@@ -231,7 +287,7 @@ Thread create_thread(void*(*func)(void*), void* args, Thread thread_arr[], size_
     return thread;
 }
 
-void clean_threads(Thread thread_arr[], size_t arr_size)
+void clean_threads(thread_t thread_arr[], size_t arr_size)
 {
     for (int i = 0; i < arr_size; i++) {
         WaitForSingleObject(*(HANDLE*) thread_arr[i].native, INFINITE);
